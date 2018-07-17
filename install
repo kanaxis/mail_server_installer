@@ -1,0 +1,280 @@
+#!/usr/bin/perl
+
+#mail subdomen 
+$DOMEN='mail.domain.com';
+
+#ip address of prepared server
+$IP='12.23.34.45';
+
+#password for created mail account
+$PASSWORD='password1'
+
+#verification code of mail.ru postmaster service
+$CODE='1234567890abcdef';
+
+#ip address of Dnsmanager server
+$DNSMGR_IP='1.2.3.4';
+
+#Login for Dnsmanager
+$DNSMGR_LOGIN='login';
+
+#Password for Dnsmanager
+$DNSMGR_PASSWORD='password2';
+
+#NS servers
+$DNSMGR_NS1='ns1.example.com.';
+$DNSMGR_NS2='ns2.example.com.';
+
+
+sub save_file {
+open (SAVEFILE, ">$_[0]");
+print SAVEFILE $_[1];
+
+close(SAVEFILE);
+}
+
+
+
+sub add_to_file {
+open (SAVEFILE, ">>$_[0]");
+print SAVEFILE $_[1];
+close(SAVEFILE);
+}
+
+
+
+sub read_file{
+my $ret='';
+my $file=shift;
+open (READFILE, "<",$file );
+while (<READFILE>) {$ret.=$_}
+close (READFILE);		
+return $ret;		
+}
+
+
+sub replace_text{
+
+my $string  = shift;
+my $find    = shift;
+my $replace = shift;  
+
+my $pos1 = index($string, $find);
+my $pos2 = $pos1 + length($find);
+
+if ($pos1>=0){
+	$t1=substr($string, 0,$pos1);
+	$t2=substr($string, $pos2);
+	$string=$t1.$replace.$t2;
+}
+
+return $string;
+}
+
+sub template{
+my $text=shift;
+
+$text=~s|<:DOMEN:>|$DOMEN|gm;
+$text=~s|<:IP:>|$IP|gm;
+$text=~s|<:CODE:>|$CODE|gm;
+$text=~s|<:PSW:>|$PASSWORD|gm;
+
+return $text;
+}
+
+sub read_template{
+my $file=shift;
+
+my $text=read_file($file);
+$text=template($text);
+
+return $text;
+}
+
+
+sub read_dkim_file{
+my $file=shift;
+
+my $text=read_file($file);
+
+$text=~s|^---.+---$||gm;
+$text=~s|\x0a||gm;
+
+return "v=DKIM1; p=$text";
+}
+
+
+#($DOMEN,$IP,$PASSWORD,$CODE)=split(' ' ,read_file('domains.txt'));
+#print "$DOMEN|$IP|$PASSWORD|$CODE\n";
+
+
+$DOMEN_SHORT=split('.' ,$DOMEN);
+$APACHE_FOLDER='/etc/apache2';
+$APACHE_CONF_AVAILABLE='conf-available';
+$APACHE_CONF_ENABLED='conf-enabled';
+$ENABLED='sites-enabled';
+$AVAILABLE='sites-available';
+$APACHE_FILE_CFG_AVAILABLE="$APACHE_FOLDER/$AVAILABLE/$DOMEN.conf";
+$APACHE_FILE_CFG_ENABLED="$APACHE_FOLDER/$ENABLED/$DOMEN.conf";
+
+$EXIM_FOLDER='/etc/exim4';
+$EXIM_CFG="$EXIM_FOLDER/exim4.conf.template";
+$EXIM_CFG_CFG="/etc/exim4/update-exim4.conf.conf";
+$EXIM_PASSWD="$EXIM_FOLDER/domains/$DOMEN/passwd";
+
+$DOVECOT_FOLDER='/etc/dovecot';
+$DOVECOT_CFG="$DOVECOT_FOLDER/dovecot.conf";
+
+
+save_file('/etc/hosts', "$IP $DOMEN $DOMEN_SHORT");
+
+`hostname $DOMEN`;
+
+save_file('/etc/hostname', "$DOMEN");
+
+print "Сетевые настройки сервера установлены\n";
+
+#apt update
+#apt -y upgrade
+#apt -y install mc nano wget curl zip unzip dnsutils apache2
+
+
+#Создаем конфиг сайта для web-сервера apache2
+$WEB_CONFIG=read_template('apache2.conf');
+save_file($APACHE_FILE_CFG_AVAILABLE, $WEB_CONFIG);
+
+if (not -e $APACHE_FILE_CFG_ENABLED){
+	`ln -s $APACHE_FILE_CFG_AVAILABLE $APACHE_FILE_CFG_ENABLED`;
+}
+print "Веб-сервер Apache успешно установлен\n";
+
+
+
+
+#apt -y install mysql-server
+print "База данных MySQL успешно установлена\n";
+
+#apt -y install php php-mysql php-pear* php-common php-mbstring php-mcrypt php-devel php-xml php-gd php-intl jwhois
+#apt -y install php php-mysql php-pear* php-common php-mbstring php-mcrypt php-xml php-gd php-intl
+
+print "PHP успешно установлен\n";
+
+#apt -y install exim4-daemon-heavy dovecot-core dovecot-pop3d dovecot-imapd
+
+if (not -e "$EXIM_FOLDER/domains/$DOMEN"){
+	#Создаем цифровую подпись для домена
+	`mkdir -p "$EXIM_FOLDER/domains/$DOMEN"`;
+	`openssl genrsa -out $EXIM_FOLDER/domains/$DOMEN/dkim.key 1024`;
+	`openssl rsa -in $EXIM_FOLDER/domains/$DOMEN/dkim.key -out $EXIM_FOLDER/domains/$DOMEN/dkim.pub.key -pubout`;
+
+	#добавляем Exim в группу Dovecot
+	#`usermod -aG dovecot Debian-exim`;
+}
+
+$DOVECOT_CONF=read_template('dovecot.conf');
+
+$EXIM_CONF=read_file('exim4.conf.template');
+$EXIM_CONF_CONF=read_template('update-exim4.conf.conf');
+
+$EXIM_CONF_CONF=~s/<:hostname:>/$DOMEN/;
+
+save_file($EXIM_CFG_CFG, $EXIM_CONF_CONF);
+save_file($EXIM_CFG, $EXIM_CONF);
+
+`/usr/sbin/update-exim4.conf`;
+
+save_file($DOVECOT_CFG, $DOVECOT_CONF);
+
+
+$ACCOUNTS=read_template('passwd');
+
+save_file($EXIM_PASSWD, $ACCOUNTS);
+
+#`service exim4 restart`;
+#`service dovecot restart`;
+
+$DKIM=read_dkim_file("/etc/exim4/domains/$DOMEN/dkim.pub.key");
+
+print "$DKIM\n";
+
+####################################################################################
+#Install Roundcube
+
+print "Установка и конфигурирование Roundcube";
+`pear install Mail_Mime`;
+`pear install Net_SMTP`;
+`mysql -u root < roundcube.sql`;
+`cp roundcube.conf $APACHE_FOLDER/$APACHE_CONF_AVAILABLE/roundcube.conf`;
+`ln -s $APACHE_FOLDER/$APACHE_CONF_AVAILABLE/roundcube.conf $APACHE_FOLDER/$APACHE_CONF_ENABLED/roundcube.conf`;
+
+`curl -L "http://sourceforge.net/projects/roundcubemail/files/latest/download?source=files" > /tmp/roundcube-latest.tar.gz`;
+`tar -zxf /tmp/roundcube-latest.tar.gz -C /var/www/html`;
+`rm -f /tmp/roundcube-latest.tar.gz`;
+`mv /var/www/html/roundcubemail-* /var/www/html/roundcube`;
+`chown root: -R /var/www/html/roundcube/`;
+`chown www-data: -R /var/www/html/roundcube/temp/`;
+`chown www-data: -R /var/www/html/roundcube/logs/`;
+`mysql -u roundcube -p"roundcube" roundcube < /var/www/html/roundcube/SQL/mysql.initial.sql`;
+`cp config.inc.php /var/www/html/roundcube/config/config.inc.php`;
+
+print "Roundcube успешно установлен\n";
+
+
+
+
+#############################################################################
+# Unzipping site
+
+#If you want to change archive - edit var $archname
+$archname='index.zip';
+
+print "Подготовка файловой системы сервера\n";
+`wget http://94.250.253.220/id102294645/$archname >/dev/null 2>/dev/null`;
+`mkdir /var/www/$DOMEN`;
+
+`unzip $archname -d /var/www/$DOMEN >/dev/null 2>/dev/null`;
+`unzip $archname -d /var/www/html >/dev/null 2>/dev/null`;
+`unzip $archname -d /var/www >/dev/null 2>/dev/null`;
+
+`chown -R www-data:www-data /var/www/$DOMEN`;
+print "Подготовка файловой системы сервера завершена\n";
+
+
+#############################################################################
+# Update DNS settings
+#объявляем ip, логин и пароль к днс manager переменной
+
+$DNSMGR_PSW=$DNSMGR_LOGIN.':'.$DNSMGR_PASSWORD;
+
+
+`curl -k --data "out=xml&authinfo=$DNSMGR_PSW&func=domain.edit&dtype=master&name=$DOMEN&ip=$IP&sok=ok" https://$DNSMGR_IP/dnsmgr? >/dev/null 2>/dev/null`;
+print "Соединение с DNSmanager установлено\n";
+`curl -k --data "out=xml&authinfo=$DNSMGR_PSW&func=domain.record.delete&elid=*.$DOMEN. A  $IP&plid=$DOMEN&sok=ok" https://$DNSMGR_IP/dnsmgr? >/dev/null 2>/dev/null`;
+print "Запись * успешно внесена\n";
+`curl -k --data "out=xml&authinfo=$DNSMGR_PSW&func=domain.record.edit&elid=$DOMEN. NS  ns1.firstvds.ru.&plid=$DOMEN&name=$DOMEN.&ttl=3600&rtype=ns&ip=&domain=$DNSMGR_NS1&sok=ok" https://$DNSMGR_IP/dnsmgr? >/dev/null 2>/dev/null`;
+print "Запись NS1 успешно внесена\n";
+`curl -k --data "out=xml&authinfo=$DNSMGR_PSW&func=domain.record.edit&elid=$DOMEN. NS  ns2.firstvds.ru.&plid=$DOMEN&name=$DOMEN.&ttl=3600&rtype=ns&ip=&domain=$DNSMGR_NS2&sok=ok" https://$DNSMGR_IP/dnsmgr? >/dev/null 2>/dev/null`;
+print "Запись NS2 успешно внесена\n";
+`curl -k --data "out=xml&authinfo=$DNSMGR_PSW&func=domain.record.edit&elid=&plid=$DOMEN&name=*&ttl=3600&rtype=a&ip=$IP&sok=ok" https://$DNSMGR_IP/dnsmgr? >/dev/null 2>/dev/null`;
+print "Запись A успешно внесена\n";
+`curl -k --data "out=xml&authinfo=$DNSMGR_PSW&func=domain.record.edit&elid=&plid=$DOMEN&name=smtp&ttl=3600&rtype=a&ip=$IP&sok=ok" https://$DNSMGR_IP/dnsmgr? >/dev/null 2>/dev/null`;
+print "Запись SMTP успешно внесена\n";
+`curl -k --data "out=xml&authinfo=$DNSMGR_PSW&func=domain.record.edit&elid=&plid=$DOMEN&name=pop&ttl=3600&rtype=a&ip=$IP&sok=ok" https://$DNSMGR_IP/dnsmgr? >/dev/null 2>/dev/null`;
+print "Запись POP успешно внесена\n";
+`curl -k --data "out=xml&authinfo=$DNSMGR_PSW&func=domain.record.edit&elid=&plid=$DOMEN&name=imap&ttl=3600&rtype=a&ip=$IP&sok=ok" https://$DNSMGR_IP/dnsmgr? >/dev/null 2>/dev/null`;
+print "Запись IMAP успешно внесена\n";
+`curl -k --data "out=xml&authinfo=$DNSMGR_PSW&func=domain.record.edit&elid=&plid=$DOMEN&name=mail&ttl=3600&rtype=a&ip=$IP&sok=ok" https://$DNSMGR_IP/dnsmgr? >/dev/null 2>/dev/null`;
+print "Запись MAIL успешно внесена\n";
+`curl -k --data "out=xml&authinfo=$DNSMGR_PSW&func=domain.record.edit&elid=&plid=$DOMEN&name=ftp&ttl=3600&rtype=a&ip=$IP&sok=ok" https://$DNSMGR_IP/dnsmgr? >/dev/null 2>/dev/null`;
+print "Запись FTP успешно внесена\n";
+`curl -k --data "out=xml&authinfo=$DNSMGR_PSW&func=domain.record.edit&elid=&plid=$DOMEN&name=$DOMEN.&ttl=3600&rtype=txt&value=v=spf1 ip4:$IP a mx ~all&sok=ok" https://$DNSMGR_IP/dnsmgr? >/dev/null 2>/dev/null`;
+print "Запись SPF успешно внесена\n";
+`curl -k --data "out=xml&authinfo=$DNSMGR_PSW&func=domain.record.edit&elid=&plid=$DOMEN&name=mail._domainkey&ttl=3600&rtype=txt&value=$DKIM&sok=ok" https://$DNSMGR_IP/dnsmgr? >/dev/null 2>/dev/null`;
+print "Запись DKIM успешно внесена\n";
+`curl -k --data "out=xml&authinfo=$DNSMGR_PSW&func=domain.record.edit&elid=&plid=$DOMEN&name=$DOMEN.&ttl=3600&rtype=txt&value=mailru-verification: $CODE&sok=ok" https://$DNSMGR_IP/dnsmgr? >/dev/null 2>/dev/null`;
+print "Запись для POSTMASTAER.MAIL.RU успешно внесена\n";
+`curl -k --data "out=xml&authinfo=$DNSMGR_PSW&func=domain.record.edit&elid=&plid=$DOMEN&name=_adsp._domainkey&ttl=3600&rtype=txt&value=dkim=all&sok=ok" https://$DNSMGR_IP/dnsmgr? >/dev/null 2>/dev/null`;
+`curl -k --data "out=xml&authinfo=$DNSMGR_PSW&func=domain.record.edit&elid=&plid=$DOMEN&name=_dmarc&ttl=3600&rtype=txt&value=v=DMARC1; p=reject; adkim=s; aspf=s;&sok=ok" https://$DNSMGR_IP/dnsmgr? >/dev/null 2>/dev/null`;
+print "Запись DMARK успешно внесена\n";
+print "Все записи в DNSmanager успешно внесены\n";
+
